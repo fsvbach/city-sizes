@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>City Comparison – City Sizes Overlaid</title>
+
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🏙</text></svg>" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header>
+  <h1>City Comparison</h1>
+  <span id="subtitle">City boundaries overlaid true to scale</span>
+  <span id="status">Loading data...</span>
+  <span class="header-actions">
+    <button type="button" id="saveBtn" title="Export this comparison as a JSON file">Save</button>
+    <button type="button" id="loadBtn" title="Import a comparison from a JSON file">Load</button>
+  </span>
+  <input id="importFile" type="file" accept=".json,application/json" style="display:none" />
+</header>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="js/app.js"></script>
+
+</body>
+</html>
