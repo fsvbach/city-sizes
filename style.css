@@ -22,7 +22,14 @@ header {
 
 header h1 { font-size: 1.15rem; font-weight: 600; }
 
-#subtitle { font-size: 0.85rem; opacity: 0.85; }
+#repoLink {
+  font-size: 0.85rem;
+  color: #fff;
+  opacity: 0.85;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255,255,255,0.4);
+}
+#repoLink:hover { opacity: 1; }
 
 #status { margin-left: auto; font-size: 0.8rem; opacity: 0.75; }
 

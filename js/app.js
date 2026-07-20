@@ -10,14 +10,15 @@
 // 1 · CONFIG
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Anchor all cities are centered on. The initial value only seeds the map view —
-// once the first city is loaded, its centroid becomes the reference location,
-// switchable via the radio buttons in the panel.
-let anchor = [47.37, 8.54];
-let referenceId = null;   // OSM id (e.g. "relation/62422") of the reference city
+// Comparison loaded on startup. To change the default, Save an arrangement
+// and point this at the file.
+const DEFAULT_COMPARISON_URL = 'data/zurich-2.json';
 
-// The first entry becomes the reference location
-const INITIAL_CITIES = ['Zurich', 'Mexico City', 'London', 'Berlin', 'New York City'];
+// Anchor all cities are centered on — the centroid of the reference city,
+// set as soon as the first city is instantiated and switchable via the
+// radio buttons in the panel.
+let anchor = null;
+let referenceId = null;   // OSM id (e.g. "relation/62422") of the reference city
 
 const PALETTE = ['#e74c3c', '#27ae60', '#2980b9', '#f39c12', '#8e44ad', '#16a085', '#d35400', '#2c3e50'];
 
@@ -33,7 +34,8 @@ const map = L.map('map', {
   // Quarter zoom steps for buttons, keyboard, and scroll wheel
   zoomSnap: 0.25,
   zoomDelta: 0.25,
-}).setView(anchor, 9);
+});
+map.fitWorld();  // placeholder view until the default comparison is loaded
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
 
@@ -176,8 +178,6 @@ function toAnchorLatLngs(polysM, offsetM = [0, 0]) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 4 · NOMINATIM
 // ══════════════════════════════════════════════════════════════════════════════
-const sleep = ms => new Promise(res => setTimeout(res, ms));
-
 async function fetchBoundary(query) {
   const key = `cityBoundary:v2:${query}`;
   try {
@@ -560,18 +560,14 @@ function setStatus(text) {
 // 8 · INITIAL LOAD
 // ══════════════════════════════════════════════════════════════════════════════
 (async () => {
-  for (const query of INITIAL_CITIES) {
-    setStatus(`Loading ${query}…`);
-    try {
-      const { fromCache } = await addCity(query);
-      // Nominatim usage policy: max. 1 request per second
-      if (!fromCache) await sleep(1100);
-    } catch (err) {
-      console.error(err);
-      setStatus(`Failed to load ${query}`);
-      await sleep(1100);
-    }
+  try {
+    const r = await fetch(DEFAULT_COMPARISON_URL);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    importComparison(await r.json());
+  } catch (err) {
+    // Reading the default file fails on file:// (browsers block local fetch);
+    // the Load button works regardless.
+    console.error(err);
+    setStatus('Could not load the default comparison — serve the app over HTTP or use Load');
   }
-  setStatus(`${cities.length} cities loaded`);
-  fitVisible();
 })();
