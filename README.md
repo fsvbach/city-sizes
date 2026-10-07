@@ -6,7 +6,7 @@ underneath.
 
 **Live demo: <https://fsvbach.github.io/city-sizes/>**
 
-![Zurich compared with Mexico City, London, Berlin, and New York](images/zurich-2.png)
+![Zurich compared with Mexico City, London, Berlin, and New York](images/zurich-1.png)
 
 ## Features
 
@@ -17,6 +17,12 @@ underneath.
 - **Move cities**: click an outline to select it, then drag. Clicking the
   active reference radio re-aligns it with the map.
 - **Colors**: click a swatch to open a color picker.
+- **Legend** (top bar): full panel, names only (visible cities alphabetically,
+  without colors, sizes or tooltips — nothing reveals which outline is which),
+  or hidden.
+- **Copy link** (top bar): a link that reproduces the current view including
+  the legend mode — with "Show names only" active it's a quiz. The link holds
+  only OSM ids; boundaries are fetched from Nominatim when it is opened.
 - **Save / Load** (top bar): export/import the assembled comparison as
   self-contained JSON (geometry included, no network needed to load).
   Hidden cities are not saved.
@@ -31,6 +37,11 @@ On startup the app loads `data/zurich-2.json`. To change the default, Save
 your arrangement and point `DEFAULT_COMPARISON_URL` in `js/app.js` at the
 file. When opened via `file://`, browsers block reading the default file —
 use the Load button instead.
+
+Map tiles need a free [CARTO Basemaps key](https://carto.com/basemaps/apikey/),
+restricted to the serving host and set in `js/config.js` (a localhost key goes
+in the gitignored `js/config.local.js`). Without a key, Esri's key-free grey
+tiles are used instead.
 
 ## How it works
 
@@ -48,5 +59,6 @@ beyond official land figures.
 ## Data
 
 Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright)
-contributors (ODbL) · tiles © [CARTO](https://carto.com/attributions) ·
+contributors (ODbL) · tiles © [CARTO](https://carto.com/attributions)
+(or © [Esri](https://www.esri.com/) when no key is configured) ·
 boundaries via [Nominatim](https://nominatim.org/)

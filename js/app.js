@@ -20,6 +20,11 @@ const DEFAULT_COMPARISON_URL = 'data/zurich-2.json';
 let anchor = null;
 let referenceId = null;   // OSM id (e.g. "relation/62422") of the reference city
 
+// Legend (city panel) mode, set by the header buttons: 'full' (colors, sizes,
+// controls, tooltips), 'names' (visible cities' names only — for quizzes), 'off'
+const LEGEND_MODES = ['full', 'names', 'off'];
+let legendMode = 'full';
+
 const PALETTE = ['#e74c3c', '#27ae60', '#2980b9', '#f39c12', '#8e44ad', '#16a085', '#d35400', '#2c3e50'];
 
 const M_PER_DEG = 111320;               // meters per degree of latitude (approx.)
@@ -39,15 +44,37 @@ map.fitWorld();  // placeholder view until the default comparison is loaded
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
 
-// Muted greyscale tiles so the colored outlines stand out
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-  attribution:
-    '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
-    '© <a href="https://carto.com/attributions">CARTO</a> · ' +
-    'Boundaries: <a href="https://nominatim.org/">Nominatim</a>',
-  subdomains: 'abcd',
-  maxZoom: 19,
-}).addTo(map);
+// Muted greyscale tiles so the colored outlines stand out.
+// CARTO Positron needs a (free) key since Sep 2026, configured per host in js/config.js.
+// Without a key for this host, fall back to Esri's key-free Light Gray Canvas (max zoom 16).
+const CARTO_API_KEY = ((window.CARTO_API_KEYS || {})[location.hostname] || '').trim();
+const BOUNDARY_ATTRIBUTION = 'Boundaries: <a href="https://nominatim.org/">Nominatim</a>';
+
+if (CARTO_API_KEY) {
+  L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png?key=' +
+      encodeURIComponent(CARTO_API_KEY),
+    {
+      attribution:
+        '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
+        '© <a href="https://carto.com/attributions">CARTO</a> · ' + BOUNDARY_ATTRIBUTION,
+      subdomains: 'abcd',
+      maxZoom: 19,
+    }
+  ).addTo(map);
+} else {
+  console.warn(`No CARTO key for host "${location.hostname}" in js/config.js — using Esri Light Gray fallback (max zoom 16).`);
+  L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+    {
+      attribution:
+        'Tiles © <a href="https://www.esri.com/">Esri</a> — Esri, HERE, Garmin, ' +
+        '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · ' +
+        BOUNDARY_ATTRIBUTION,
+      maxZoom: 16,
+    }
+  ).addTo(map);
+}
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -178,26 +205,28 @@ function toAnchorLatLngs(polysM, offsetM = [0, 0]) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 4 · NOMINATIM
 // ══════════════════════════════════════════════════════════════════════════════
-async function fetchBoundary(query) {
-  const key = `cityBoundary:v2:${query}`;
+const NOMINATIM = 'https://nominatim.openstreetmap.org';
+const NOMINATIM_OPTS = '&format=jsonv2&polygon_geojson=1&polygon_threshold=0.0005&accept-language=en';
+
+// localStorage cache with TTL
+function cacheGet(key) {
   try {
     const cached = JSON.parse(localStorage.getItem(key));
-    if (cached && Date.now() - cached.ts < CACHE_TTL) return { ...cached.data, fromCache: true };
+    if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
   } catch { /* broken cache entry → refetch */ }
+  return null;
+}
+function cachePut(key, data) {
+  try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data })); } catch { /* full */ }
+}
 
-  const url = 'https://nominatim.openstreetmap.org/search'
-    + `?q=${encodeURIComponent(query)}`
-    + '&format=jsonv2&polygon_geojson=1&polygon_threshold=0.0005&limit=1'
-    + '&accept-language=en';
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`Nominatim HTTP ${r.status}`);
+// OSM ids: the app uses "relation/62422", Nominatim's lookup endpoint "R62422"
+const toLookupId   = id => id.replace(/^relation\//, 'R').replace(/^way\//, 'W').replace(/^node\//, 'N');
+const fromLookupId = id => ({ R: 'relation/', W: 'way/', N: 'node/' })[id[0]] + id.slice(1);
 
-  const hit = (await r.json())[0];
-  if (!hit?.geojson || !hit.geojson.type.includes('Polygon')) {
-    throw new Error(`No boundary found for “${query}”`);
-  }
-
-  const data = {
+/** Boundary data from a Nominatim result (search and lookup share the format). */
+function boundaryFromHit(hit) {
+  return {
     osmId: `${hit.osm_type}/${hit.osm_id}`,
     // Resolved official name (first component of display_name) instead of
     // whatever the user typed — makes wrong matches visible immediately
@@ -205,8 +234,48 @@ async function fetchBoundary(query) {
     displayName: hit.display_name,
     geojson: hit.geojson,
   };
-  try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data })); } catch { /* full */ }
+}
+
+async function fetchBoundary(query) {
+  const key = `cityBoundary:v2:${query}`;
+  const cached = cacheGet(key);
+  if (cached) return { ...cached, fromCache: true };
+
+  const r = await fetch(`${NOMINATIM}/search?q=${encodeURIComponent(query)}&limit=1${NOMINATIM_OPTS}`);
+  if (!r.ok) throw new Error(`Nominatim HTTP ${r.status}`);
+
+  const hit = (await r.json())[0];
+  if (!hit?.geojson || !hit.geojson.type.includes('Polygon')) {
+    throw new Error(`No boundary found for “${query}”`);
+  }
+
+  const data = boundaryFromHit(hit);
+  cachePut(key, data);
+  cachePut(`cityBoundary:v2:id:${toLookupId(data.osmId)}`, data);  // lets share links skip the lookup
   return { ...data, fromCache: false };
+}
+
+/** Boundaries for several OSM ids ("R62422", …) via lookup requests of up to
+ *  50 ids. Returns a Map lookupId → data; unknown ids are missing from it. */
+async function fetchBoundariesByIds(lookupIds) {
+  const found = new Map();
+  const missing = [];
+  for (const id of lookupIds) {
+    const cached = cacheGet(`cityBoundary:v2:id:${id}`);
+    if (cached) found.set(id, cached); else missing.push(id);
+  }
+  for (let i = 0; i < missing.length; i += 50) {
+    const r = await fetch(`${NOMINATIM}/lookup?osm_ids=${missing.slice(i, i + 50).join(',')}${NOMINATIM_OPTS}`);
+    if (!r.ok) throw new Error(`Nominatim HTTP ${r.status}`);
+    for (const hit of await r.json()) {
+      if (!hit.geojson?.type.includes('Polygon')) continue;
+      const data = boundaryFromHit(hit);
+      const id = toLookupId(data.osmId);
+      cachePut(`cityBoundary:v2:id:${id}`, data);
+      found.set(id, data);
+    }
+  }
+  return found;
 }
 
 
@@ -220,33 +289,54 @@ function formatKm2(v) {
   return v.toLocaleString('en-US', { maximumFractionDigits: v < 100 ? 1 : 0 });
 }
 
+function tooltipHtml(c) {
+  return `<b>${c.label}</b><br>` +
+    `${formatKm2(c.areaKm2)} km²<br>` +
+    `Extent: ${Math.round(c.widthKm)} × ${Math.round(c.heightKm)} km` +
+    (c.excludedParts
+      ? `<br><i>${c.excludedParts} outlying part${c.excludedParts > 1 ? 's' : ''} excluded</i>`
+      : '');
+}
+
+/** Tooltips reveal name and size, so they exist only in the full legend mode. */
+function syncTooltip(city) {
+  if (legendMode === 'full') {
+    if (!city.polygon.getTooltip()) city.polygon.bindTooltip(tooltipHtml(city), { sticky: true });
+  } else {
+    city.polygon.unbindTooltip();
+  }
+}
+
 /** Largest city at the bottom, smallest on top — otherwise Berlin hides Norderstedt. */
 function restackLayers() {
   [...cities].sort((a, b) => b.areaKm2 - a.areaKm2)
     .forEach(c => { if (c.visible) c.polygon.bringToFront(); });
 }
 
-/** Zooms the map to all visible cities. If a zoom animation is in flight the
- *  fit is deferred to zoomend — Leaflet silently swallows fitBounds/setView
- *  calls made during one (Map._tryAnimatedZoom returns early). */
-let pendingFitBounds = null;
+/** fitBounds that survives a running zoom animation (Leaflet silently drops
+ *  fitBounds/setView calls during one — Map._tryAnimatedZoom returns early). */
+let pendingFit = null;
 
+function fitBoundsSafe(bounds, padding = [30, 30]) {
+  if (map._animatingZoom) {
+    if (!pendingFit) {
+      map.once('zoomend', () => {
+        const { bounds, padding } = pendingFit;
+        pendingFit = null;
+        map.fitBounds(bounds, { padding });
+      });
+    }
+    pendingFit = { bounds, padding };
+  } else {
+    map.fitBounds(bounds, { padding });
+  }
+}
+
+/** Zooms the map to all visible cities. */
 function fitVisible() {
   const visible = cities.filter(c => c.visible);
   if (!visible.length) return;
-  const bounds = visible.reduce((b, c) => b.extend(c.polygon.getBounds()), L.latLngBounds([]));
-  if (map._animatingZoom) {
-    if (!pendingFitBounds) {
-      map.once('zoomend', () => {
-        const b = pendingFitBounds;
-        pendingFitBounds = null;
-        map.fitBounds(b, { padding: [30, 30] });
-      });
-    }
-    pendingFitBounds = bounds;
-  } else {
-    map.fitBounds(bounds, { padding: [30, 30] });
-  }
+  fitBoundsSafe(visible.reduce((b, c) => b.extend(c.polygon.getBounds()), L.latLngBounds([])));
 }
 
 /** Makes a city the reference location. The assembled arrangement is kept:
@@ -355,20 +445,11 @@ function instantiateCity({ osmId, name, displayName, geojson }, opts = {}) {
   });
   if (opts.visible !== false) polygon.addTo(map);
 
-  polygon.bindTooltip(
-    `<b>${name}</b><br>` +
-    `${formatKm2(areaKm2)} km²<br>` +
-    `Extent: ${Math.round(widthKm)} × ${Math.round(heightKm)} km` +
-    (excludedParts
-      ? `<br><i>${excludedParts} outlying part${excludedParts > 1 ? 's' : ''} excluded</i>`
-      : ''),
-    { sticky: true },
-  );
-
   const city = { id: osmId, label: name, displayName, color, areaKm2, widthKm, heightKm,
-                 polysM, centroid, polygon, geojson,
+                 excludedParts, polysM, centroid, polygon, geojson,
                  visible: opts.visible !== false, offsetM };
   cities.push(city);
+  syncTooltip(city);
   attachInteraction(city);
   restackLayers();
   cityPanel.render();
@@ -419,29 +500,35 @@ function importComparison(data) {
     throw new Error('Not a city-comparison file');
   }
 
-  // Replace the current comparison
-  for (const c of cities) c.polygon.remove();
-  cities.length = 0;
-  selectedId = null;
-  referenceId = null;
-
+  resetComparison();
   for (const c of data.cities) {
     instantiateCity(
       { osmId: c.id, name: c.label, displayName: c.displayName, geojson: c.geojson },
       { color: c.color, visible: c.visible, offsetM: c.offsetM },
     );
   }
+  placeAround(data.referenceId);
+  fitVisible();
+  cityPanel.render();
+  setStatus(`Loaded ${cities.length} cities`);
+}
 
-  // Restore the reference and re-place all outlines around it, keeping the
-  // saved manual offsets (setReference would reset them)
-  const ref = cities.find(c => c.id === data.referenceId) || cities[0];
+/** Removes all cities (before the comparison is replaced). */
+function resetComparison() {
+  for (const c of cities) c.polygon.remove();
+  cities.length = 0;
+  selectedId = null;
+  referenceId = null;
+}
+
+/** Sets the reference (first city as fallback) and places all outlines around
+ *  it with their saved offsets (setReference would reset them). */
+function placeAround(refId) {
+  const ref = cities.find(c => c.id === refId) || cities[0];
   referenceId = ref.id;
   anchor = ref.centroid;
   for (const c of cities) c.polygon.setLatLngs(toAnchorLatLngs(c.polysM, c.offsetM));
   restackLayers();
-  fitVisible();
-  cityPanel.render();
-  setStatus(`Loaded ${cities.length} cities`);
 }
 
 // Header buttons (static DOM — wired up once)
@@ -462,6 +549,78 @@ importInput.addEventListener('change', async () => {
 
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 6b · SHARE LINK
+// ══════════════════════════════════════════════════════════════════════════════
+// The current view as a URL hash (names-only legend → quiz). Only ids, colors,
+// offsets, reference, legend mode and map section go in; the boundaries are
+// fetched again on opening. Hidden cities are left out.
+//   #cities=R1682248:e74c3c:0:0,R65606:2980b9:-1200:340&ref=R1682248
+//    &legend=names&view=47.1,8.2,47.6,9.0      (view: south,west,north,east)
+
+function buildShareHash() {
+  const b = map.getBounds();
+  const f = v => v.toFixed(4);
+  return 'cities=' + cities.filter(c => c.visible).map(c =>
+      `${toLookupId(c.id)}:${c.color.slice(1)}:${Math.round(c.offsetM[0])}:${Math.round(c.offsetM[1])}`
+    ).join(',')
+    + `&ref=${toLookupId(referenceId)}`
+    + `&legend=${legendMode}`
+    + `&view=${f(b.getSouth())},${f(b.getWest())},${f(b.getNorth())},${f(b.getEast())}`;
+}
+
+/** Parses a share hash; null if there is none. */
+function parseShareHash(hash) {
+  const p = new URLSearchParams(hash.replace(/^#/, ''));
+  if (!p.has('cities')) return null;
+  const entries = p.get('cities').split(',').map(s => {
+    const [lookupId, color, dx, dy] = s.split(':');
+    return { lookupId, color: `#${color}`, offsetM: [Number(dx) || 0, Number(dy) || 0] };
+  }).filter(e => /^[RWN]\d+$/.test(e.lookupId) && /^#[0-9a-f]{6}$/i.test(e.color));
+  if (!entries.length) return null;
+  const view = (p.get('view') || '').split(',').map(Number);
+  const ref = p.get('ref') || '';
+  return {
+    entries,
+    referenceId: /^[RWN]\d+$/.test(ref) ? fromLookupId(ref) : null,
+    legendMode: LEGEND_MODES.includes(p.get('legend')) ? p.get('legend') : 'full',
+    view: view.length === 4 && view.every(Number.isFinite) ? [[view[0], view[1]], [view[2], view[3]]] : null,
+  };
+}
+
+async function copyLink() {
+  if (!cities.some(c => c.visible)) { setStatus('No visible cities to share'); return; }
+  history.replaceState(null, '', `#${buildShareHash()}`);  // link also shows in the address bar
+  const label = copyLinkBtn.querySelector('span');
+  try {
+    await navigator.clipboard.writeText(location.href);
+    label.textContent = 'Copied';
+    setTimeout(() => { label.textContent = 'Copy link'; }, 2000);
+  } catch {
+    setStatus('Clipboard blocked — copy the link from the address bar');
+  }
+}
+
+async function importSharedView({ entries, referenceId: refId, legendMode: mode, view }) {
+  setStatus('Loading shared comparison…');
+  const boundaries = await fetchBoundariesByIds(entries.map(e => e.lookupId));
+  resetComparison();
+  for (const e of entries) {
+    const b = boundaries.get(e.lookupId);
+    if (b && !cities.some(c => c.id === b.osmId)) instantiateCity(b, { color: e.color, offsetM: e.offsetM });
+  }
+  if (!cities.length) throw new Error('none of the linked cities was found');
+  placeAround(refId);
+  setLegendMode(mode);  // renders the panel
+  if (view) fitBoundsSafe(L.latLngBounds(view), [0, 0]); else fitVisible();
+  const missing = entries.length - cities.length;
+  setStatus(`Loaded ${cities.length} cities` + (missing ? ` (${missing} not found)` : ''));
+}
+
+const copyLinkBtn = document.getElementById('copyLinkBtn');
+copyLinkBtn.addEventListener('click', copyLink);
+
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 7 · CITY PANEL (Leaflet control, top right)
 // ══════════════════════════════════════════════════════════════════════════════
 const CityPanel = L.Control.extend({
@@ -477,6 +636,21 @@ const CityPanel = L.Control.extend({
 
   render() {
     if (!this._div) return;
+    this._div.style.display = legendMode === 'off' ? 'none' : '';
+    if (legendMode === 'off') return;
+
+    if (legendMode === 'names') {
+      // Visible cities' names only, alphabetically — area order, colors, the
+      // bold reference and hidden-city rows would all give the answer away
+      const names = cities.filter(c => c.visible)
+        .sort((a, b) => a.label.localeCompare(b.label))
+        .map(c => `<div class="city-row"><span class="city-name">${c.label}</span></div>`)
+        .join('');
+      this._div.innerHTML = `
+        <strong>Cities</strong>
+        ${names || '<div class="city-empty">No city visible</div>'}`;
+      return;
+    }
 
     const rows = [...cities].sort((a, b) => b.areaKm2 - a.areaKm2).map(c => `
       <div class="city-row${c.id === referenceId ? ' is-ref' : ''}">
@@ -551,6 +725,22 @@ const CityPanel = L.Control.extend({
 const cityPanel = new CityPanel();
 map.addControl(cityPanel);
 
+// Legend mode buttons in the header (reachable while the panel is hidden)
+const legendButtons = [...document.querySelectorAll('.legend-modes button')];
+
+function setLegendMode(mode) {
+  legendMode = LEGEND_MODES.includes(mode) ? mode : 'full';
+  for (const b of legendButtons) {
+    const active = b.dataset.mode === legendMode;
+    b.classList.toggle('is-active', active);
+    b.setAttribute('aria-pressed', String(active));
+  }
+  for (const c of cities) syncTooltip(c);
+  cityPanel.render();
+}
+
+legendButtons.forEach(b => b.addEventListener('click', () => setLegendMode(b.dataset.mode)));
+
 function setStatus(text) {
   document.getElementById('status').textContent = text;
 }
@@ -559,8 +749,11 @@ function setStatus(text) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 8 · INITIAL LOAD
 // ══════════════════════════════════════════════════════════════════════════════
+// A share link in the URL takes precedence over the default comparison.
 (async () => {
+  const shared = parseShareHash(location.hash);
   try {
+    if (shared) { await importSharedView(shared); return; }
     const r = await fetch(DEFAULT_COMPARISON_URL);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     importComparison(await r.json());
@@ -568,6 +761,8 @@ function setStatus(text) {
     // Reading the default file fails on file:// (browsers block local fetch);
     // the Load button works regardless.
     console.error(err);
-    setStatus('Could not load the default comparison — serve the app over HTTP or use Load');
+    setStatus(shared
+      ? `Could not load the link: ${err.message}`
+      : 'Could not load the default comparison — serve the app over HTTP or use Load');
   }
 })();

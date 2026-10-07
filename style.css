@@ -1,93 +1,102 @@
-/* ── Reset & Layout ───────────────────────────────────────────────────────── */
+/* Design tokens, matching fynnbachmann.com: white, thin dividers, Roboto, rust accent */
+:root {
+  --bg: #fff;
+  --text: #000;
+  --text-light: #828282;
+  --accent: #8c3e1d;
+  --divider: rgba(0, 0, 0, 0.1);
+  --font: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  font-family: system-ui, sans-serif;
+  font-family: var(--font);
+  color: var(--text);
   display: flex;
   flex-direction: column;
   height: 100vh;
 }
+.leaflet-container { font-family: var(--font); }
 
-/* ── Header ──────────────────────────────────────────────────────────────── */
+/* ── Header (like the site's navbar) ─────────────────────────────────────── */
 header {
-  background: #2c3e50;
-  color: #fff;
-  padding: 12px 20px;
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 16px;
+  height: 56px;
+  padding: 0 20px;
   flex-shrink: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--divider);
   z-index: 1000;
 }
 
-header h1 { font-size: 1.15rem; font-weight: 600; }
+header h1 { font-size: 1.25rem; font-weight: 300; white-space: nowrap; }
+header h1 b { font-weight: 700; color: var(--accent); }
 
-#repoLink {
-  font-size: 0.85rem;
-  color: #fff;
-  opacity: 0.85;
-  text-decoration: none;
-  border-bottom: 1px solid rgba(255,255,255,0.4);
+#repoLink { display: flex; margin-right: -6px; }
+#repoLink:hover { opacity: 0.6; }
+
+#status { margin-left: auto; font-size: 0.8rem; color: var(--text-light); }
+
+/* Buttons are outlined; the active legend mode is filled with the accent color */
+header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  position: relative;
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 4px 11px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
 }
-#repoLink:hover { opacity: 1; }
+header button:hover { color: var(--accent); border-color: var(--accent); z-index: 1; }
+header button.is-active,
+header button.is-active:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  z-index: 1;
+}
 
-#status { margin-left: auto; font-size: 0.8rem; opacity: 0.75; }
+.legend-modes { display: flex; }
+.legend-modes button { border-radius: 0; margin-left: -1px; }
+.legend-modes button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.legend-modes button:last-child { border-radius: 0 6px 6px 0; }
 
 .header-actions { display: flex; gap: 6px; }
 
-.header-actions button {
-  font-family: inherit;
-  font-size: 0.78rem;
-  padding: 4px 12px;
-  border: 1px solid rgba(255,255,255,0.35);
-  border-radius: 5px;
-  background: rgba(255,255,255,0.08);
-  color: #fff;
-  cursor: pointer;
-}
-.header-actions button:hover { background: rgba(255,255,255,0.18); }
-
-/* ── Map container ────────────────────────────────────────────────────────── */
+/* ── Map ─────────────────────────────────────────────────────────────────── */
 #map { flex: 1; }
 
-/* ── Leaflet control: city panel ─────────────────────────────────────────── */
+/* ── City panel (Leaflet control, top right) ─────────────────────────────── */
 .city-panel {
-  background: rgba(255,255,255,0.95);
-  border-radius: 8px;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.22);
+  min-width: 220px;
   padding: 10px 14px;
   font-size: 0.85rem;
-  color: #333;
-  min-width: 220px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  box-shadow: rgba(0, 0, 0, 0.08) 0 1px 3px;
 }
 
-.city-panel strong {
-  display: block;
-  font-size: 0.9rem;
-  margin-bottom: 6px;
-}
+.city-panel strong { display: block; font-size: 0.9rem; margin-bottom: 6px; }
 
-.city-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 0;
-}
-.city-row:hover { background: rgba(0,0,0,0.04); }
+.city-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.city-row input { cursor: pointer; accent-color: var(--accent); }
+.city-row.is-ref .city-name { font-weight: 700; }
 
-.city-row input[type="checkbox"],
-.city-row input[type="radio"] {
-  cursor: pointer;
-  accent-color: #2c3e50;
-}
-
-.city-row.is-ref .city-name { font-weight: 600; }
-
-.panel-hint {
-  font-size: 0.72rem;
-  color: #888;
-  margin-top: 6px;
-}
+.city-name { flex: 1; }
+.city-area { font-variant-numeric: tabular-nums; color: var(--text-light); white-space: nowrap; }
+.city-empty { color: var(--text-light); font-size: 0.8rem; padding: 4px 0; }
+.panel-hint { font-size: 0.72rem; color: var(--text-light); margin-top: 6px; }
 
 /* Color swatch is a native color input — clicking it opens the picker */
 input.swatch {
@@ -97,40 +106,22 @@ input.swatch {
   border: none;
   border-radius: 3px;
   background: none;
-  cursor: pointer;
   flex-shrink: 0;
 }
 input.swatch::-webkit-color-swatch-wrapper { padding: 0; }
 input.swatch::-webkit-color-swatch,
-input.swatch::-moz-color-swatch {
-  border: 1px solid rgba(0,0,0,0.25);
-  border-radius: 3px;
-}
+input.swatch::-moz-color-swatch { border: 1px solid rgba(0, 0, 0, 0.25); border-radius: 3px; }
 
-.city-name { flex: 1; }
-
-.city-area {
-  font-variant-numeric: tabular-nums;
-  color: #666;
-  white-space: nowrap;
-}
-
-.city-empty { color: #888; font-size: 0.8rem; padding: 4px 0; }
-
-#addCityForm {
-  margin-top: 8px;
-  border-top: 1px solid rgba(0,0,0,0.08);
-  padding-top: 8px;
-}
+#addCityForm { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--divider); }
 
 #addCityInput {
   width: 100%;
+  font: inherit;
   font-size: 0.85rem;
-  font-family: inherit;
   padding: 6px 8px;
-  border: 1px solid rgba(0,0,0,0.2);
-  border-radius: 5px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
   outline: none;
 }
-#addCityInput:focus { border-color: #2c3e50; }
-#addCityInput:disabled { background: #f0f0f0; color: #999; }
+#addCityInput:focus { border-color: var(--accent); }
+#addCityInput:disabled { background: #f0f0f0; color: var(--text-light); }
