@@ -14,9 +14,8 @@
 // and point this at the file.
 const DEFAULT_COMPARISON_URL = 'data/zurich-2.json';
 
-// Anchor all cities are centered on — the centroid of the reference city,
-// set as soon as the first city is instantiated and switchable via the
-// radio buttons in the panel.
+// Anchor all cities are centered on — the centroid of the reference city
+// (set by placeAround, switchable via the radio buttons in the panel).
 let anchor = null;
 let referenceId = null;   // OSM id (e.g. "relation/62422") of the reference city
 
@@ -239,7 +238,7 @@ function boundaryFromHit(hit) {
 async function fetchBoundary(query) {
   const key = `cityBoundary:v2:${query}`;
   const cached = cacheGet(key);
-  if (cached) return { ...cached, fromCache: true };
+  if (cached) return cached;
 
   const r = await fetch(`${NOMINATIM}/search?q=${encodeURIComponent(query)}&limit=1${NOMINATIM_OPTS}`);
   if (!r.ok) throw new Error(`Nominatim HTTP ${r.status}`);
@@ -252,7 +251,7 @@ async function fetchBoundary(query) {
   const data = boundaryFromHit(hit);
   cachePut(key, data);
   cachePut(`cityBoundary:v2:id:${toLookupId(data.osmId)}`, data);  // lets share links skip the lookup
-  return { ...data, fromCache: false };
+  return data;
 }
 
 /** Boundaries for several OSM ids ("R62422", …) via lookup requests of up to
@@ -280,10 +279,69 @@ async function fetchBoundariesByIds(lookupIds) {
 
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 5 · CITY LAYERS
+// 5 · CITIES
 // ══════════════════════════════════════════════════════════════════════════════
-const cities = [];  // { id, label, displayName, color, areaKm2, widthKm, heightKm,
-                    //   polysM, centroid, polygon, visible, offsetM }
+const cities = [];  // { id, label, displayName, geojson, color, offsetM, visible,
+                    //   polysM, centroid, areaKm2, widthKm, heightKm, excludedParts, polygon }
+
+/** Creates a city (projection + Leaflet polygon, placed by placeAround) from
+ *  boundary data with optional color, offset and visibility. */
+function createCity({ osmId, name, displayName, geojson, color = PALETTE[cities.length % PALETTE.length],
+                      offsetM = [0, 0], visible = true }) {
+  const { polysM, centroid, areaKm2, widthKm, heightKm, excludedParts } =
+    projectCity(toMultiPolygon(geojson));
+  const polygon = L.polygon([], {
+    color, weight: 2.5, fillColor: color, fillOpacity: 0.12,
+    // Don't let clicks on the outline bubble to the map — map.on('click')
+    // would clear the selection right away
+    bubblingMouseEvents: false,
+  });
+  if (visible) polygon.addTo(map);
+  const city = { id: osmId, label: name, displayName, geojson, color, offsetM, visible,
+                 polysM, centroid, areaKm2, widthKm, heightKm, excludedParts, polygon };
+  cities.push(city);
+  attachInteraction(city);
+  return city;
+}
+
+/** Sets the reference (first city as fallback) and places all outlines around
+ *  its centroid with their offsets. */
+function placeAround(refId) {
+  const ref = cities.find(c => c.id === refId) || cities[0];
+  referenceId = ref.id;
+  anchor = ref.centroid;
+  for (const c of cities) c.polygon.setLatLngs(toAnchorLatLngs(c.polysM, c.offsetM));
+}
+
+/** Makes a city the reference location: the whole arrangement shifts rigidly
+ *  so its outline coincides with its real boundary on the map, all other
+ *  cities keep their position relative to it (manual drags included). */
+function setReference(id) {
+  const ref = cities.find(c => c.id === id);
+  if (!ref) return;
+  const [dx, dy] = ref.offsetM;
+  for (const c of cities) c.offsetM = [c.offsetM[0] - dx, c.offsetM[1] - dy];
+  placeAround(id);
+  fitVisible();
+  refresh();
+}
+
+async function addCity(query) {
+  const data = await fetchBoundary(query);
+  if (cities.some(c => c.id === data.osmId)) throw new Error(`“${data.name}” is already on the map`);
+  const city = createCity(data);
+  placeAround(referenceId);
+  refresh();
+  return city;
+}
+
+// ── Derived state: layer order, tooltips, panel ──────────────────────────────
+
+/** Largest city at the bottom, smallest on top — otherwise Berlin hides Norderstedt. */
+function restackLayers() {
+  [...cities].sort((a, b) => b.areaKm2 - a.areaKm2)
+    .forEach(c => { if (c.visible) c.polygon.bringToFront(); });
+}
 
 function formatKm2(v) {
   return v.toLocaleString('en-US', { maximumFractionDigits: v < 100 ? 1 : 0 });
@@ -307,11 +365,15 @@ function syncTooltip(city) {
   }
 }
 
-/** Largest city at the bottom, smallest on top — otherwise Berlin hides Norderstedt. */
-function restackLayers() {
-  [...cities].sort((a, b) => b.areaKm2 - a.areaKm2)
-    .forEach(c => { if (c.visible) c.polygon.bringToFront(); });
+/** Re-syncs everything derived from the cities and the legend mode. Called
+ *  once at the end of each operation that changes them. */
+function refresh() {
+  restackLayers();
+  for (const c of cities) syncTooltip(c);
+  cityPanel.render();
 }
+
+// ── View ─────────────────────────────────────────────────────────────────────
 
 /** fitBounds that survives a running zoom animation (Leaflet silently drops
  *  fitBounds/setView calls during one — Map._tryAnimatedZoom returns early). */
@@ -337,25 +399,6 @@ function fitVisible() {
   const visible = cities.filter(c => c.visible);
   if (!visible.length) return;
   fitBoundsSafe(visible.reduce((b, c) => b.extend(c.polygon.getBounds()), L.latLngBounds([])));
-}
-
-/** Makes a city the reference location. The assembled arrangement is kept:
- *  the whole group shifts rigidly so the new reference outline coincides with
- *  its real boundary on the map — all other cities keep their position
- *  relative to it (manual drags included). */
-function setReference(id) {
-  const city = cities.find(c => c.id === id);
-  if (!city) return;
-  referenceId = id;
-  anchor = city.centroid;
-  const [dx, dy] = city.offsetM;
-  for (const c of cities) {
-    c.offsetM = [c.offsetM[0] - dx, c.offsetM[1] - dy];
-    c.polygon.setLatLngs(toAnchorLatLngs(c.polysM, c.offsetM));
-  }
-  restackLayers();
-  fitVisible();
-  cityPanel.render();
 }
 
 // ── Selection & moving ───────────────────────────────────────────────────────
@@ -419,59 +462,39 @@ function attachInteraction(city) {
 // Clicking the empty map clears the selection
 map.on('click', () => setSelected(null));
 
-/** Builds a city (projection, polygon, tooltip, panel entry) from boundary
- *  data — either freshly fetched (addCity) or restored from a saved file
- *  (importComparison, which passes color/visibility/offset via opts). */
-function instantiateCity({ osmId, name, displayName, geojson }, opts = {}) {
-  const color   = opts.color ?? PALETTE[cities.length % PALETTE.length];
-  const offsetM = opts.offsetM ?? [0, 0];
-  const { polysM, centroid, areaKm2, widthKm, heightKm, excludedParts } =
-    projectCity(toMultiPolygon(geojson));
 
-  // The first loaded city automatically becomes the reference location
-  if (!cities.length) {
-    referenceId = osmId;
-    anchor = centroid;
+// ══════════════════════════════════════════════════════════════════════════════
+// 6 · LOAD / SAVE / SHARE
+// ══════════════════════════════════════════════════════════════════════════════
+// Two formats, both without hidden cities and both loaded via loadComparison:
+// a self-contained JSON file (geometry included, loads without Nominatim) and
+// a URL hash with only ids, colors, offsets, reference, legend mode and map
+// section (boundaries are fetched again on opening; names-only legend → quiz).
+//   #cities=R1682248:e74c3c:0:0,R65606:2980b9:-1200:340&ref=R1682248
+//    &legend=names&view=47.1,8.2,47.6,9.0      (view: south,west,north,east)
+
+/** Replaces the current comparison. entries: boundary data + color/offsetM/visible. */
+function loadComparison({ entries, referenceId: refId, legendMode: mode = legendMode, view = null }) {
+  for (const c of cities) c.polygon.remove();
+  cities.length = 0;
+  selectedId = null;
+  for (const e of entries) createCity(e);
+  placeAround(refId);
+  setLegendMode(mode);  // includes refresh()
+  if (view) fitBoundsSafe(L.latLngBounds(view), [0, 0]); else fitVisible();
+}
+
+function importComparison(data) {
+  if (data?.format !== 'city-comparison/1' || !Array.isArray(data.cities) || !data.cities.length) {
+    throw new Error('Not a city-comparison file');
   }
-
-  const polygon = L.polygon(toAnchorLatLngs(polysM, offsetM), {
-    color,
-    weight: 2.5,
-    fillColor: color,
-    fillOpacity: 0.12,
-    // Don't let clicks on the outline bubble to the map — map.on('click')
-    // would clear the selection right away
-    bubblingMouseEvents: false,
+  loadComparison({
+    entries: data.cities.map(c => ({ osmId: c.id, name: c.label, displayName: c.displayName, geojson: c.geojson,
+                                     color: c.color, offsetM: c.offsetM, visible: c.visible })),
+    referenceId: data.referenceId,
   });
-  if (opts.visible !== false) polygon.addTo(map);
-
-  const city = { id: osmId, label: name, displayName, color, areaKm2, widthKm, heightKm,
-                 excludedParts, polysM, centroid, polygon, geojson,
-                 visible: opts.visible !== false, offsetM };
-  cities.push(city);
-  syncTooltip(city);
-  attachInteraction(city);
-  restackLayers();
-  cityPanel.render();
-  return city;
+  setStatus(`Loaded ${cities.length} cities`);
 }
-
-async function addCity(query) {
-  const { fromCache, ...data } = await fetchBoundary(query);
-  if (cities.some(c => c.id === data.osmId)) {
-    throw new Error(`“${data.name}” is already on the map`);
-  }
-  const city = instantiateCity(data);
-  return { label: city.label, fromCache };
-}
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 6 · SAVE / LOAD
-// ══════════════════════════════════════════════════════════════════════════════
-// Comparisons are exported as self-contained JSON (boundary geometry included),
-// so loading reproduces the exact arrangement without any Nominatim requests.
-// Hidden cities are left out of the file.
 
 function exportComparison() {
   const visibleCities = cities.filter(c => c.visible);
@@ -494,68 +517,6 @@ function exportComparison() {
   URL.revokeObjectURL(a.href);
   setStatus('Comparison saved');
 }
-
-function importComparison(data) {
-  if (data?.format !== 'city-comparison/1' || !Array.isArray(data.cities) || !data.cities.length) {
-    throw new Error('Not a city-comparison file');
-  }
-
-  resetComparison();
-  for (const c of data.cities) {
-    instantiateCity(
-      { osmId: c.id, name: c.label, displayName: c.displayName, geojson: c.geojson },
-      { color: c.color, visible: c.visible, offsetM: c.offsetM },
-    );
-  }
-  placeAround(data.referenceId);
-  fitVisible();
-  cityPanel.render();
-  setStatus(`Loaded ${cities.length} cities`);
-}
-
-/** Removes all cities (before the comparison is replaced). */
-function resetComparison() {
-  for (const c of cities) c.polygon.remove();
-  cities.length = 0;
-  selectedId = null;
-  referenceId = null;
-}
-
-/** Sets the reference (first city as fallback) and places all outlines around
- *  it with their saved offsets (setReference would reset them). */
-function placeAround(refId) {
-  const ref = cities.find(c => c.id === refId) || cities[0];
-  referenceId = ref.id;
-  anchor = ref.centroid;
-  for (const c of cities) c.polygon.setLatLngs(toAnchorLatLngs(c.polysM, c.offsetM));
-  restackLayers();
-}
-
-// Header buttons (static DOM — wired up once)
-document.getElementById('saveBtn').addEventListener('click', exportComparison);
-const importInput = document.getElementById('importFile');
-document.getElementById('loadBtn').addEventListener('click', () => importInput.click());
-importInput.addEventListener('change', async () => {
-  const file = importInput.files[0];
-  if (!file) return;
-  try {
-    importComparison(JSON.parse(await file.text()));
-  } catch (err) {
-    console.error(err);
-    setStatus(`Import failed: ${err.message}`);
-  }
-  importInput.value = '';
-});
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 6b · SHARE LINK
-// ══════════════════════════════════════════════════════════════════════════════
-// The current view as a URL hash (names-only legend → quiz). Only ids, colors,
-// offsets, reference, legend mode and map section go in; the boundaries are
-// fetched again on opening. Hidden cities are left out.
-//   #cities=R1682248:e74c3c:0:0,R65606:2980b9:-1200:340&ref=R1682248
-//    &legend=names&view=47.1,8.2,47.6,9.0      (view: south,west,north,east)
 
 function buildShareHash() {
   const b = map.getBounds();
@@ -587,37 +548,16 @@ function parseShareHash(hash) {
   };
 }
 
-async function copyLink() {
-  if (!cities.some(c => c.visible)) { setStatus('No visible cities to share'); return; }
-  history.replaceState(null, '', `#${buildShareHash()}`);  // link also shows in the address bar
-  const label = copyLinkBtn.querySelector('span');
-  try {
-    await navigator.clipboard.writeText(location.href);
-    label.textContent = 'Copied';
-    setTimeout(() => { label.textContent = 'Copy link'; }, 2000);
-  } catch {
-    setStatus('Clipboard blocked — copy the link from the address bar');
-  }
-}
-
-async function importSharedView({ entries, referenceId: refId, legendMode: mode, view }) {
+async function importSharedView(shared) {
   setStatus('Loading shared comparison…');
-  const boundaries = await fetchBoundariesByIds(entries.map(e => e.lookupId));
-  resetComparison();
-  for (const e of entries) {
-    const b = boundaries.get(e.lookupId);
-    if (b && !cities.some(c => c.id === b.osmId)) instantiateCity(b, { color: e.color, offsetM: e.offsetM });
-  }
-  if (!cities.length) throw new Error('none of the linked cities was found');
-  placeAround(refId);
-  setLegendMode(mode);  // renders the panel
-  if (view) fitBoundsSafe(L.latLngBounds(view), [0, 0]); else fitVisible();
-  const missing = entries.length - cities.length;
-  setStatus(`Loaded ${cities.length} cities` + (missing ? ` (${missing} not found)` : ''));
+  const boundaries = await fetchBoundariesByIds(shared.entries.map(e => e.lookupId));
+  const entries = shared.entries.filter(e => boundaries.has(e.lookupId))
+    .map(e => ({ ...boundaries.get(e.lookupId), color: e.color, offsetM: e.offsetM }));
+  if (!entries.length) throw new Error('none of the linked cities was found');
+  loadComparison({ entries, referenceId: shared.referenceId, legendMode: shared.legendMode, view: shared.view });
+  const missing = shared.entries.length - entries.length;
+  setStatus(`Loaded ${entries.length} cities` + (missing ? ` (${missing} not found)` : ''));
 }
-
-const copyLinkBtn = document.getElementById('copyLinkBtn');
-copyLinkBtn.addEventListener('click', copyLink);
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -711,8 +651,8 @@ const CityPanel = L.Control.extend({
       input.disabled = true;
       setStatus(`Loading ${query}…`);
       try {
-        const { label } = await addCity(query);
-        setStatus(`Added ${label}`);
+        const city = await addCity(query);
+        setStatus(`Added ${city.label}`);
       } catch (err) {
         console.error(err);
         setStatus(err.message);
@@ -725,7 +665,10 @@ const CityPanel = L.Control.extend({
 const cityPanel = new CityPanel();
 map.addControl(cityPanel);
 
-// Legend mode buttons in the header (reachable while the panel is hidden)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 8 · HEADER
+// ══════════════════════════════════════════════════════════════════════════════
 const legendButtons = [...document.querySelectorAll('.legend-modes button')];
 
 function setLegendMode(mode) {
@@ -735,11 +678,39 @@ function setLegendMode(mode) {
     b.classList.toggle('is-active', active);
     b.setAttribute('aria-pressed', String(active));
   }
-  for (const c of cities) syncTooltip(c);
-  cityPanel.render();
+  refresh();
 }
-
 legendButtons.forEach(b => b.addEventListener('click', () => setLegendMode(b.dataset.mode)));
+
+const copyLinkBtn = document.getElementById('copyLinkBtn');
+copyLinkBtn.addEventListener('click', async () => {
+  if (!cities.some(c => c.visible)) { setStatus('No visible cities to share'); return; }
+  history.replaceState(null, '', `#${buildShareHash()}`);  // link also shows in the address bar
+  const label = copyLinkBtn.querySelector('span');
+  try {
+    await navigator.clipboard.writeText(location.href);
+    label.textContent = 'Copied';
+    setTimeout(() => { label.textContent = 'Copy link'; }, 2000);
+  } catch {
+    setStatus('Clipboard blocked — copy the link from the address bar');
+  }
+});
+
+document.getElementById('saveBtn').addEventListener('click', exportComparison);
+
+const importInput = document.getElementById('importFile');
+document.getElementById('loadBtn').addEventListener('click', () => importInput.click());
+importInput.addEventListener('change', async () => {
+  const file = importInput.files[0];
+  if (!file) return;
+  try {
+    importComparison(JSON.parse(await file.text()));
+  } catch (err) {
+    console.error(err);
+    setStatus(`Import failed: ${err.message}`);
+  }
+  importInput.value = '';
+});
 
 function setStatus(text) {
   document.getElementById('status').textContent = text;
@@ -747,7 +718,7 @@ function setStatus(text) {
 
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 8 · INITIAL LOAD
+// 9 · INITIAL LOAD
 // ══════════════════════════════════════════════════════════════════════════════
 // A share link in the URL takes precedence over the default comparison.
 (async () => {

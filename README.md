@@ -21,7 +21,7 @@ underneath.
   without colors, sizes or tooltips — nothing reveals which outline is which),
   or hidden.
 - **Copy link** (top bar): a link that reproduces the current view including
-  the legend mode — with "Show names only" active it's a quiz. The link holds
+  the legend mode — with "Show city names only" active it's a quiz. The link holds
   only OSM ids; boundaries are fetched from Nominatim when it is opened.
 - **Save / Load** (top bar): export/import the assembled comparison as
   self-contained JSON (geometry included, no network needed to load).
