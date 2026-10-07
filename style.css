@@ -98,6 +98,23 @@ header button.is-active:hover {
 .city-empty { color: var(--text-light); font-size: 0.8rem; padding: 4px 0; }
 .panel-hint { font-size: 0.72rem; color: var(--text-light); margin-top: 6px; }
 
+/* Copy controls: − count + ; hidden except for + while there is a single instance */
+.copies { display: flex; align-items: center; gap: 2px; margin-left: 4px; }
+.copies button {
+  width: 18px;
+  height: 18px;
+  font: inherit;
+  line-height: 1;
+  border: 1px solid var(--divider);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.copies button:hover { color: var(--accent); border-color: var(--accent); }
+.copies .count { min-width: 1.4em; text-align: center; font-variant-numeric: tabular-nums; color: var(--text-light); }
+.copies.single .count, .copies.single button[data-delta="-1"] { visibility: hidden; }
+
 /* Color swatch is a native color input — clicking it opens the picker */
 input.swatch {
   width: 16px;

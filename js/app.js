@@ -259,7 +259,7 @@ async function fetchBoundary(query) {
 async function fetchBoundariesByIds(lookupIds) {
   const found = new Map();
   const missing = [];
-  for (const id of lookupIds) {
+  for (const id of new Set(lookupIds)) {
     const cached = cacheGet(`cityBoundary:v2:id:${id}`);
     if (cached) found.set(id, cached); else missing.push(id);
   }
@@ -281,7 +281,7 @@ async function fetchBoundariesByIds(lookupIds) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 5 · CITIES
 // ══════════════════════════════════════════════════════════════════════════════
-const cities = [];  // { id, label, displayName, geojson, color, offsetM, visible,
+const cities = [];  // { id, osmId, label, displayName, geojson, color, offsetM, visible,
                     //   polysM, centroid, areaKm2, widthKm, heightKm, excludedParts, polygon }
 
 /** Creates a city (projection + Leaflet polygon, placed by placeAround) from
@@ -297,8 +297,10 @@ function createCity({ osmId, name, displayName, geojson, color = PALETTE[cities.
     bubblingMouseEvents: false,
   });
   if (visible) polygon.addTo(map);
-  const city = { id: osmId, label: name, displayName, geojson, color, offsetM, visible,
-                 polysM, centroid, areaKm2, widthKm, heightKm, excludedParts, polygon };
+  // Copies of a city share its osmId and get ids like "relation/62422#2"
+  const copies = cities.filter(c => c.osmId === osmId).length;
+  const city = { id: copies ? `${osmId}#${copies + 1}` : osmId, osmId, label: name, displayName, geojson,
+                 color, offsetM, visible, polysM, centroid, areaKm2, widthKm, heightKm, excludedParts, polygon };
   cities.push(city);
   attachInteraction(city);
   return city;
@@ -328,11 +330,44 @@ function setReference(id) {
 
 async function addCity(query) {
   const data = await fetchBoundary(query);
-  if (cities.some(c => c.id === data.osmId)) throw new Error(`“${data.name}” is already on the map`);
+  if (cities.some(c => c.osmId === data.osmId)) throw new Error(`“${data.name}” is already on the map`);
   const city = createCity(data);
   placeAround(referenceId);
   refresh();
   return city;
+}
+
+/** Adds a copy of a city on the next cell of a square spiral around it, so
+ *  repeated copies tile its surroundings (how many Berns fit in Rome?). */
+function addCopy(city) {
+  const [cx, cy] = spiralCell(cities.filter(c => c.osmId === city.osmId).length);
+  createCity({
+    osmId: city.osmId, name: city.label, displayName: city.displayName, geojson: city.geojson,
+    color: city.color, visible: city.visible,
+    offsetM: [city.offsetM[0] + cx * city.widthKm * 1030, city.offsetM[1] + cy * city.heightKm * 1030],
+  });
+  placeAround(referenceId);
+  refresh();
+}
+
+/** Removes the last copy of a city (never the original). */
+function removeCopy(city) {
+  const last = cities.filter(c => c.osmId === city.osmId).at(-1);
+  if (last.id === last.osmId) return;
+  last.polygon.remove();
+  cities.splice(cities.indexOf(last), 1);
+  if (selectedId === last.id) setSelected(null);
+  refresh();
+}
+
+/** k-th cell of a square spiral around the origin: (1,0), (1,1), (0,1), (-1,1), … */
+function spiralCell(k) {
+  let x = 0, y = 0, dx = 1, dy = 0, len = 1, steps = 0;
+  for (let i = 0; i < k; i++) {
+    x += dx; y += dy;
+    if (++steps === len) { steps = 0; [dx, dy] = [-dy, dx]; if (dy === 0) len++; }
+  }
+  return [x, y];
 }
 
 // ── Derived state: layer order, tooltips, panel ──────────────────────────────
@@ -504,7 +539,7 @@ function exportComparison() {
     exported: new Date().toISOString(),
     referenceId,
     cities: visibleCities.map(c => ({
-      id: c.id, label: c.label, displayName: c.displayName,
+      id: c.osmId, label: c.label, displayName: c.displayName,
       color: c.color, offsetM: c.offsetM,
       geojson: c.geojson,
     })),
@@ -522,7 +557,7 @@ function buildShareHash() {
   const b = map.getBounds();
   const f = v => v.toFixed(4);
   return 'cities=' + cities.filter(c => c.visible).map(c =>
-      `${toLookupId(c.id)}:${c.color.slice(1)}:${Math.round(c.offsetM[0])}:${Math.round(c.offsetM[1])}`
+      `${toLookupId(c.osmId)}:${c.color.slice(1)}:${Math.round(c.offsetM[0])}:${Math.round(c.offsetM[1])}`
     ).join(',')
     + `&ref=${toLookupId(referenceId)}`
     + `&legend=${legendMode}`
@@ -582,7 +617,7 @@ const CityPanel = L.Control.extend({
     if (legendMode === 'names') {
       // Visible cities' names only, alphabetically — area order, colors, the
       // bold reference and hidden-city rows would all give the answer away
-      const names = cities.filter(c => c.visible)
+      const names = cities.filter(c => c.visible && c.id === c.osmId)
         .sort((a, b) => a.label.localeCompare(b.label))
         .map(c => `<div class="city-row"><span class="city-name">${c.label}</span></div>`)
         .join('');
@@ -592,7 +627,10 @@ const CityPanel = L.Control.extend({
       return;
     }
 
-    const rows = [...cities].sort((a, b) => b.areaKm2 - a.areaKm2).map(c => `
+    // One row per city; copies only show up in the count
+    const rows = cities.filter(c => c.id === c.osmId).sort((a, b) => b.areaKm2 - a.areaKm2).map(c => {
+      const n = cities.filter(x => x.osmId === c.osmId).length;
+      return `
       <div class="city-row${c.id === referenceId ? ' is-ref' : ''}">
         <input type="radio" name="refCity" data-id="${c.id}"
                title="Use as reference location" ${c.id === referenceId ? 'checked' : ''} />
@@ -602,12 +640,18 @@ const CityPanel = L.Control.extend({
                title="Change color" />
         <span class="city-name" title="${c.displayName}">${c.label}</span>
         <span class="city-area">${formatKm2(c.areaKm2)} km²</span>
-      </div>`).join('');
+        <span class="copies${n > 1 ? '' : ' single'}">
+          <button type="button" class="copy" data-id="${c.id}" data-delta="-1" title="Remove a copy">−</button>
+          <span class="count">${n}</span>
+          <button type="button" class="copy" data-id="${c.id}" data-delta="1" title="Add a copy">+</button>
+        </span>
+      </div>`;
+    }).join('');
 
     this._div.innerHTML = `
       <strong>Cities</strong>
       ${rows || '<div class="city-empty">No city loaded yet</div>'}
-      ${rows ? `<div class="panel-hint">◉ reference location on the map · ☑ visible<br>
+      ${rows ? `<div class="panel-hint">◉ reference location on the map · ☑ visible · + − copies<br>
         Move a city: click its outline, then drag</div>` : ''}
       <form id="addCityForm">
         <input id="addCityInput" type="text" placeholder="Add a city…" autocomplete="off" />
@@ -620,24 +664,35 @@ const CityPanel = L.Control.extend({
       rb.addEventListener('click', () => setReference(rb.dataset.id));
     });
 
-    // Live color picking: update the polygon while the picker is open
+    // Color and visibility apply to a city and all its copies.
+    // Live color picking: update the polygons while the picker is open
     this._div.querySelectorAll('input[type="color"]').forEach(ci => {
       ci.addEventListener('input', () => {
-        const city = cities.find(c => c.id === ci.dataset.id);
-        city.color = ci.value;
-        city.polygon.setStyle({ color: ci.value, fillColor: ci.value });
+        for (const c of cities.filter(c => c.osmId === ci.dataset.id)) {
+          c.color = ci.value;
+          c.polygon.setStyle({ color: ci.value, fillColor: ci.value });
+        }
       });
     });
 
     this._div.querySelectorAll('input[type="checkbox"]').forEach(cb => {
       cb.addEventListener('change', () => {
-        const city = cities.find(c => c.id === cb.dataset.id);
-        city.visible = cb.checked;
-        if (cb.checked) { city.polygon.addTo(map); restackLayers(); }
-        else {
-          city.polygon.remove();
-          if (selectedId === city.id) setSelected(null);
+        for (const c of cities.filter(c => c.osmId === cb.dataset.id)) {
+          c.visible = cb.checked;
+          if (cb.checked) c.polygon.addTo(map);
+          else {
+            c.polygon.remove();
+            if (selectedId === c.id) setSelected(null);
+          }
         }
+        restackLayers();
+      });
+    });
+
+    this._div.querySelectorAll('button.copy').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const city = cities.find(c => c.id === btn.dataset.id);
+        if (btn.dataset.delta === '1') addCopy(city); else removeCopy(city);
       });
     });
 
